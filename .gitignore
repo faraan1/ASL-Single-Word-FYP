@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+data/letters/*
+data/words/*
+*.pkl
+*.h5
+*.pt
+.DS_Store
