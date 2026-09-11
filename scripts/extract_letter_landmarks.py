@@ -42,12 +42,20 @@ def extract_landmarks_from_image(image_path):
             if hand_index >= 2:
                 break  # only handle up to 2 hands
 
-            coords = []
-            for lm in hand_landmarks.landmark:
-                coords.extend([lm.x, lm.y, lm.z])
+            coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_landmarks.landmark])
+
+            # Normalize: make the wrist (landmark 0) the origin
+            wrist = coords[0]
+            coords = coords - wrist
+
+            # Normalize: scale relative to wrist-to-middle-finger-base distance
+            # (landmark 9 = base of middle finger - a stable reference size for the hand)
+            scale = np.linalg.norm(coords[9])
+            if scale > 0:
+                coords = coords / scale
 
             start = hand_index * 63
-            landmarks_vector[start:start + 63] = coords
+            landmarks_vector[start:start + 63] = coords.flatten()
 
         return landmarks_vector
     else:
