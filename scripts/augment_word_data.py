@@ -4,25 +4,27 @@ import os
 # --- Configuration ---
 DATA_DIR = "data/words/processed"
 TARGET_PER_WORD = 100
+RANDOM_SEED = 42
+
+np.random.seed(RANDOM_SEED)
 
 # Load our extracted real sequences
 X = np.load(os.path.join(DATA_DIR, "word_sequences.npy"))
 y = np.load(os.path.join(DATA_DIR, "word_labels.npy"))
 
 print(f"Loaded {len(X)} real sequences across {len(np.unique(y))} words")
-print(f"Sequence shape: {X.shape}")
 
+
+# --- Augmentation functions (unchanged from before) ---
 def rotate_sequence(sequence, max_angle=15):
-    """Rotates all landmarks in the sequence slightly around the Z axis."""
     angle = np.radians(np.random.uniform(-max_angle, max_angle))
     cos_a, sin_a = np.cos(angle), np.sin(angle)
     rotation_matrix = np.array([[cos_a, -sin_a], [sin_a, cos_a]])
-
     augmented = sequence.copy()
     for frame_idx in range(len(augmented)):
-        for hand_idx in range(2):  # 2 hands
+        for hand_idx in range(2):
             start = hand_idx * 63
-            for point_idx in range(21):  # 21 landmarks per hand
+            for point_idx in range(21):
                 p_start = start + point_idx * 3
                 xy = augmented[frame_idx, p_start:p_start + 2]
                 augmented[frame_idx, p_start:p_start + 2] = rotation_matrix @ xy
@@ -30,36 +32,27 @@ def rotate_sequence(sequence, max_angle=15):
 
 
 def scale_sequence(sequence, scale_range=(0.9, 1.1)):
-    """Slightly scales all coordinates up or down."""
     scale = np.random.uniform(*scale_range)
     return sequence * scale
 
 
 def add_noise(sequence, noise_level=0.02):
-    """Adds small random jitter to simulate tracking imprecision."""
     noise = np.random.normal(0, noise_level, sequence.shape)
     return sequence + noise
 
 
 def time_warp(sequence, warp_factor_range=(0.85, 1.15)):
-    """Slightly speeds up or slows down the motion by resampling."""
     factor = np.random.uniform(*warp_factor_range)
     original_length = len(sequence)
-    new_length = int(original_length * factor)
-    new_length = max(5, new_length)  # safety minimum
-
+    new_length = max(5, int(original_length * factor))
     indices = np.linspace(0, original_length - 1, new_length)
     warped = sequence[np.round(indices).astype(int)]
-
-    # Resample back to the original fixed length
     final_indices = np.linspace(0, new_length - 1, original_length)
     return warped[np.round(final_indices).astype(int)]
 
 
 def mirror_sequence(sequence):
-    """Flips the sequence left-right (simulates opposite-handed signing)."""
     augmented = sequence.copy()
-    # Flip the x-coordinate of every landmark (x is every 3rd value starting at 0)
     for hand_idx in range(2):
         start = hand_idx * 63
         for point_idx in range(21):
@@ -67,10 +60,9 @@ def mirror_sequence(sequence):
             augmented[:, x_index] = -augmented[:, x_index]
     return augmented
 
-def augment_sample(sequence):
-    """Applies a random combination of augmentations to one sequence."""
-    augmented = sequence.copy()
 
+def augment_sample(sequence):
+    augmented = sequence.copy()
     if np.random.rand() < 0.7:
         augmented = rotate_sequence(augmented)
     if np.random.rand() < 0.7:
@@ -81,45 +73,61 @@ def augment_sample(sequence):
         augmented = time_warp(augmented)
     if np.random.rand() < 0.3:
         augmented = mirror_sequence(augmented)
-
     return augmented
 
 
 def main():
     unique_words = np.unique(y)
-    final_X = []
-    final_y = []
+
+    train_X, train_y = [], []
+    test_X, test_y = [], []
 
     for word in unique_words:
         word_indices = np.where(y == word)[0]
         real_sequences = X[word_indices]
         real_count = len(real_sequences)
 
-        # Keep all real samples
-        for seq in real_sequences:
-            final_X.append(seq)
-            final_y.append(word)
+        # Shuffle this word's real samples before splitting
+        shuffled = real_sequences[np.random.permutation(real_count)]
 
-        # Generate augmented samples until we hit our target
-        needed = TARGET_PER_WORD - real_count
+        # Reserve at least 1 real sample for testing (never augmented)
+        test_count = max(1, round(real_count * 0.2))
+        test_samples = shuffled[:test_count]
+        train_samples = shuffled[test_count:]
+
+        # Test set: pure real data, untouched
+        for seq in test_samples:
+            test_X.append(seq)
+            test_y.append(word)
+
+        # Train set: real samples + augmented copies, built ONLY from train_samples
+        for seq in train_samples:
+            train_X.append(seq)
+            train_y.append(word)
+
+        needed = TARGET_PER_WORD - len(train_samples)
         for _ in range(needed):
-            source_seq = real_sequences[np.random.randint(real_count)]
+            source_seq = train_samples[np.random.randint(len(train_samples))]
             augmented_seq = augment_sample(source_seq)
-            final_X.append(augmented_seq)
-            final_y.append(word)
+            train_X.append(augmented_seq)
+            train_y.append(word)
 
-        print(f"Word '{word}': {real_count} real + {needed} augmented = {real_count + needed} total")
+        print(f"Word '{word}': {real_count} real -> {len(train_samples)} train real "
+              f"+ {needed} augmented = {len(train_samples) + needed} train total, "
+              f"{test_count} test (real, untouched)")
 
-    final_X = np.array(final_X)
-    final_y = np.array(final_y)
+    train_X, train_y = np.array(train_X), np.array(train_y)
+    test_X, test_y = np.array(test_X), np.array(test_y)
 
-    np.save(os.path.join(DATA_DIR, "word_sequences_augmented.npy"), final_X)
-    np.save(os.path.join(DATA_DIR, "word_labels_augmented.npy"), final_y)
+    np.save(os.path.join(DATA_DIR, "word_train_X.npy"), train_X)
+    np.save(os.path.join(DATA_DIR, "word_train_y.npy"), train_y)
+    np.save(os.path.join(DATA_DIR, "word_test_X.npy"), test_X)
+    np.save(os.path.join(DATA_DIR, "word_test_y.npy"), test_y)
 
-    print(f"\nTotal samples after augmentation: {len(final_X)}")
-    print(f"Saved to word_sequences_augmented.npy and word_labels_augmented.npy")
+    print(f"\nTrain set: {len(train_X)} samples")
+    print(f"Test set: {len(test_X)} samples (100% real, never augmented)")
+    print("Saved word_train_X.npy, word_train_y.npy, word_test_X.npy, word_test_y.npy")
 
 
 if __name__ == "__main__":
-    main()
-
+    main() 
